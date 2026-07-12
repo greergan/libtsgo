@@ -6,7 +6,7 @@ DEB_VERSION := $(subst v,,$(TSGO_VERSION))
 DEB_ARCH := amd64
 DEB_DIR := dist/$(DEB_NAME)_$(DEB_VERSION)_$(DEB_ARCH)
 
-all: slim_tsc_stub
+all: test
 
 $(TSGO_REPO):
 	git clone --branch $(TSGO_BRANCH) --depth 1 https://github.com/microsoft/typescript-go.git $(TSGO_REPO)
@@ -21,9 +21,9 @@ libtsgo.a: $(TSGO_REPO)
 	cp $(TSGO_REPO)/libslim_tsgo.a .
 	cp $(TSGO_REPO)/libslim_tsgo.h .
 
-slim_tsc_stub: clean libtsgo.a
-	g++ -o slim_tsc_stub main.cpp libslim_tsgo.a -lpthread -ldl
-	./slim_tsc_stub
+test: clean libtsgo.a
+	g++ -o test test.cpp libslim_tsgo.a -lpthread -ldl
+	./test
 
 deb: libtsgo.a
 	mkdir -p $(DEB_DIR)/DEBIAN
@@ -35,7 +35,7 @@ deb: libtsgo.a
 	dpkg-deb --build $(DEB_DIR)
 
 clean:
-	rm -rf libslim_tsgo.a libslim_tsgo.h slim_tsc_stub dist
+	rm -rf libslim_tsgo.a libslim_tsgo.h test dist
 	rm -f $(TSGO_REPO)/tsgo_bridge.go $(TSGO_REPO)/libslim_tsgo.h $(TSGO_REPO)/libslim_tsgo.a
 	rm -rf $(TSGO_REPO)/lib
 	clear

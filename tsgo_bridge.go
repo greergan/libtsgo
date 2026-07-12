@@ -228,7 +228,8 @@ func transpile(cFileName *C.char, cCode *C.char, cDtsCode *C.char, cOutDir *C.ch
 
 	json, diags := tsoptions.ParseConfigFileTextToJson("/tsconfig.json", "/tsconfig.json", tsconfigJSON)
 	if len(diags) > 0 {
-		return C.CString("Error: Failed to parse tsconfig")
+		fmt.Fprintln(os.Stderr, "Error: Failed to parse tsconfig")
+		return C.CString("")
 	}
 
 	config := tsoptions.ParseJsonConfigFileContent(
@@ -249,7 +250,8 @@ func transpile(cFileName *C.char, cCode *C.char, cDtsCode *C.char, cOutDir *C.ch
 	})
 
 	if prog == nil {
-		return C.CString("Error: Failed to init program")
+		fmt.Fprintln(os.Stderr, "Error: Failed to init program")
+		return C.CString("")
 	}
 
 	ctx := context.Background()
@@ -260,7 +262,7 @@ func transpile(cFileName *C.char, cCode *C.char, cDtsCode *C.char, cOutDir *C.ch
 			prog.GetSemanticDiagnostics(ctx, sf)...,
 		)
 		for _, d := range diags {
-			fmt.Printf("[%s] TS%d: %s\n", d.Category().String(), d.Code(), d.String())
+			fmt.Fprintf(os.Stderr, "[%s] TS%d: %s\n", d.Category().String(), d.Code(), d.String())
 		}
 	}
 
@@ -277,37 +279,29 @@ func transpile(cFileName *C.char, cCode *C.char, cDtsCode *C.char, cOutDir *C.ch
 				return nil
 			},
 		})
-		res := sb.String()
-		if res == "" {
-			return C.CString("Error: No code emitted")
-		}
-		return C.CString(res)
+		return C.CString(sb.String())
 	}
 
-	var emitErr error
 	prog.Emit(ctx, compiler.EmitOptions{
 		WriteFile: func(outFileName string, text string, data *compiler.WriteFileData) error {
 			dest := filepath.Join(outDir, outFileName)
 			if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-				emitErr = err
+				fmt.Fprintf(os.Stderr, "Error: %s\n", err.Error())
 				return err
 			}
 			if err := os.WriteFile(dest, []byte(text), 0o644); err != nil {
-				emitErr = err
+				fmt.Fprintf(os.Stderr, "Error: %s\n", err.Error())
 				return err
 			}
 			return nil
 		},
 	})
 
-	if emitErr != nil {
-		return C.CString("Error: " + emitErr.Error())
-	}
 	return C.CString("")
 }
 
 //export build
-func build(cSrcDir *C.char, cOutDir *C.char) *C.char {
+func build(cSrcDir *C.char, cOutDir *C.char) {
 	srcDir := C.GoString(cSrcDir)
 	outDir := C.GoString(cOutDir)
 
@@ -329,7 +323,6 @@ func build(cSrcDir *C.char, cOutDir *C.char) *C.char {
 	})
 
 	// walk src directory, inject all .ts files into virtual FS
-	var walkErr error
 	filepath.WalkDir(srcDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
@@ -339,7 +332,7 @@ func build(cSrcDir *C.char, cOutDir *C.char) *C.char {
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
-			walkErr = err
+			fmt.Fprintf(os.Stderr, "Error: %s\n", err.Error())
 			return err
 		}
 		vPath := "/" + path
@@ -347,10 +340,6 @@ func build(cSrcDir *C.char, cOutDir *C.char) *C.char {
 		fileNames = append(fileNames, vPath)
 		return nil
 	})
-
-	if walkErr != nil {
-		return C.CString("Error: " + walkErr.Error())
-	}
 
 	embeddedFS := bundled.WrapFS(wrapper)
 	host := &fullHost{fs: embeddedFS}
@@ -364,7 +353,8 @@ func build(cSrcDir *C.char, cOutDir *C.char) *C.char {
 	})
 
 	if prog == nil {
-		return C.CString("Error: Failed to init program")
+		fmt.Fprintln(os.Stderr, "Error: Failed to init program")
+		return
 	}
 
 	ctx := context.Background()
@@ -376,32 +366,26 @@ func build(cSrcDir *C.char, cOutDir *C.char) *C.char {
 			prog.GetSemanticDiagnostics(ctx, sf)...,
 		)
 		for _, d := range diags {
-			fmt.Printf("[%s] TS%d: %s\n", d.Category().String(), d.Code(), d.String())
+			fmt.Fprintf(os.Stderr, "[%s] TS%d: %s\n", d.Category().String(), d.Code(), d.String())
 		}
 	}
 
-	var emitErr error
 	prog.Emit(ctx, compiler.EmitOptions{
 		WriteFile: func(outFileName string, text string, data *compiler.WriteFileData) error {
 			// strip leading "/" and srcDir prefix from virtual path
 			rel := strings.TrimPrefix(outFileName, "/"+srcDir+"/")
 			dest := filepath.Join(outDir, rel)
 			if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-				emitErr = err
+				fmt.Fprintf(os.Stderr, "Error: %s\n", err.Error())
 				return err
 			}
 			if err := os.WriteFile(dest, []byte(text), 0o644); err != nil {
-				emitErr = err
+				fmt.Fprintf(os.Stderr, "Error: %s\n", err.Error())
 				return err
 			}
 			return nil
 		},
 	})
-
-	if emitErr != nil {
-		return C.CString("Error: " + emitErr.Error())
-	}
-	return C.CString("")
 }
 
 func main() {}
