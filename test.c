@@ -1,6 +1,5 @@
 #include <stdio.h>
-#include "gostr.h"
-#include "libtsgo_cpp.h"
+#include "tsgo.h"
 
 int main(void) {
     const char* my_ts_code = "import console from 'console'; console.log('Hello');";

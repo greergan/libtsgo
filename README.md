@@ -1,13 +1,13 @@
-# libtsgo-c++
+# libtsgo
 
-A C-callable static library that wraps the [microsoft/typescript-go](https://github.com/microsoft/typescript-go) compiler, enabling high-performance TypeScript compilation from C or C++.
+A C and C++ callable static library that wraps the [microsoft/typescript-go](https://github.com/microsoft/typescript-go) compiler, enabling high-performance TypeScript compilation from C or C++.
 
 ## Table of Contents
 
 - [Typescript Definition Files](#typescript-definition-files)
 - [Compiler Options](#compiler-options)
 - [API](#api)
-  - [GoStr RAII helper](#gostr-raii-helper)
+  - [GoStr helper](#gostr-helper)
   - [transpile](#transpile)
   - [build](#build)
 - [Requirements](#requirements)
@@ -50,12 +50,29 @@ The following `compilerOptions` are embedded at compile time:
 
 ## API
 
-### GoStr RAII helper
+### GoStr helper
 
-A lightweight RAII wrapper for strings returned by the library. Include `gostr.h` to use it.
+A lightweight wrapper for strings returned by the library. Include `tsgo.h` to use it.
+
+```c
+#include "tsgo.h"
+```
+
+In C++, `GoStr` is an RAII struct — the destructor calls `free()` automatically.
 
 ```cpp
-#include <gostr.h>
+GoStr result(transpile(...));
+std::cout << result.view() << std::endl;
+// freed on scope exit
+```
+
+In C, `GoStr` is a plain struct — call `GoStr_free()` manually.
+
+```c
+GoStr result;
+result.p = transpile(...);
+printf("%s\n", result.p ? result.p : "");
+GoStr_free(result);
 ```
 
 ### `transpile`
@@ -63,12 +80,12 @@ A lightweight RAII wrapper for strings returned by the library. Include `gostr.h
 Compiles a single TypeScript file in-memory.
 
 ```c
-GoStr result(transpile(
+char* transpile(
     char* fileName,   // virtual file name e.g. "input.ts"
     char* tsCode,     // TypeScript source
     char* dtsCode,    // optional .d.ts declarations, or NULL
     char* outDir      // output directory, or NULL for in-memory result
-));
+);
 ```
 
 Returns emitted JavaScript.  
@@ -90,6 +107,7 @@ void build(
 ## Requirements
 
 - Go 1.26+
+- gcc
 - g++
 - git
 - make
@@ -106,7 +124,7 @@ make
 
 This will:
 - Clone `microsoft/typescript-go` at branch `typescript/v7.0.2`
-- Build `libtsgo_cpp.a` and `libtsgo_cpp.h`
+- Build `libtsgo.a` and `libtsgo.h`
 
 [↑ Top](#table-of-contents)
 
@@ -114,31 +132,50 @@ This will:
 
 ### transpile
 
-#### In-memory result
+#### C — in-memory result
+
+```c
+#include "tsgo.h"
+
+const char* ts = "const x = 42;\nconsole.log(x);\n";
+GoStr result;
+result.p = transpile((char*)"input.ts", (char*)ts, NULL, NULL);
+printf("%s\n", result.p ? result.p : "");
+GoStr_free(result);
+```
+
+#### C++ — in-memory result
 
 ```cpp
-#include <libtsgo_cpp.h>
-#include <gostr.h>
+#include "tsgo.h"
 
 std::string ts = "const x: number = 42;\nconsole.log(x);\n";
-
-GoStr result = transpile(
+GoStr result(transpile(
     const_cast<char*>("input.ts"),
     const_cast<char*>(ts.c_str()),
     nullptr,
     nullptr
-);
-
+));
 std::cout << result.view() << std::endl;
 ```
 
-#### Emit to disk
+#### C — emit to disk
+
+```c
+#include "tsgo.h"
+
+const char* ts = "const x = 42;\nconsole.log(x);\n";
+GoStr result;
+result.p = transpile((char*)"input.ts", (char*)ts, NULL, (char*)"dist");
+GoStr_free(result);
+```
+
+#### C++ — emit to disk
 
 ```cpp
-#include <libtsgo_cpp.h>
+#include "tsgo.h"
 
 std::string ts = "const x: number = 42;\nconsole.log(x);\n";
-
 transpile(
     const_cast<char*>("input.ts"),
     const_cast<char*>(ts.c_str()),
@@ -147,29 +184,49 @@ transpile(
 );
 ```
 
-#### With .d.ts declarations
+#### C — with .d.ts declarations
+
+```c
+#include "tsgo.h"
+
+const char* dts = "declare function add(a: number, b: number): number;\n";
+const char* ts  = "const result = add(1, 2);\nconsole.log(result);\n";
+GoStr result;
+result.p = transpile((char*)"input.ts", (char*)ts, (char*)dts, NULL);
+printf("%s\n", result.p ? result.p : "");
+GoStr_free(result);
+```
+
+#### C++ — with .d.ts declarations
 
 ```cpp
-#include <libtsgo_cpp.h>
-#include <gostr.h>
+#include "tsgo.h"
 
 std::string dts = "declare function add(a: number, b: number): number;\n";
 std::string ts  = "const result = add(1, 2);\nconsole.log(result);\n";
-
-GoStr result = transpile(
+GoStr result(transpile(
     const_cast<char*>("input.ts"),
     const_cast<char*>(ts.c_str()),
     const_cast<char*>(dts.c_str()),
     nullptr
-);
-
+));
 std::cout << result.view() << std::endl;
 ```
 
 ### build
 
+#### C
+
+```c
+#include "tsgo.h"
+
+build((char*)"src", (char*)"dist");
+```
+
+#### C++
+
 ```cpp
-#include <libtsgo_cpp.h>
+#include "tsgo.h"
 
 build(
     const_cast<char*>("src"),

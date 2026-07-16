@@ -14,26 +14,24 @@ fetch-tsgo:
 	fi
 build: fetch-tsgo
 	@echo "==> Building libtsgo..."
-	cp tsgo_cpp.go $(TSGO_REPO)/
+	cp tsgo.go $(TSGO_REPO)/
 	cp -r lib $(TSGO_REPO)/lib
 	go mod tidy
-	@if [ -f libtsgo_cpp.a ] && [ -f libtsgo_cpp.h ] && \
-		diff -q $(TSGO_REPO)/libtsgo_cpp.a libtsgo_cpp.a > /dev/null 2>&1 && \
-		diff -q $(TSGO_REPO)/libtsgo_cpp.h libtsgo_cpp.h > /dev/null 2>&1; then \
-		echo "==> libtsgo_cpp.a and .h up to date, skipping Go build."; \
+	@if [ -f libtsgo.a ] && [ -f libtsgo.h ] && \
+		diff -q $(TSGO_REPO)/libtsgo.a libtsgo.a > /dev/null 2>&1 && \
+		diff -q $(TSGO_REPO)/libtsgo.h libtsgo.h > /dev/null 2>&1; then \
+		echo "==> libtsgo.a and .h up to date, skipping Go build."; \
 	else \
-	    cd $(TSGO_REPO) && go build -buildmode=c-archive -o libtsgo_cpp.a tsgo_cpp.go && \
-		cp libtsgo_cpp.a $(CURDIR)/ && \
-		cp libtsgo_cpp.h $(CURDIR)/; \
+		cd $(TSGO_REPO) && go build -buildmode=c-archive -o libtsgo.a tsgo.go && \
+		cp libtsgo.a $(CURDIR)/ && \
+		cp libtsgo.h $(CURDIR)/; \
 	fi
 test: test-cpp test-c
 test-cpp: build
-	g++ -o test_cpp test.cpp libtsgo_cpp.a -lpthread -ldl
+	g++ -o test_cpp test.cpp libtsgo.a -lpthread -ldl
 	./test_cpp
 test-c: build
-	gcc -o test_c test.c libtsgo_cpp.a -lpthread -ldl
+	gcc -o test_c test.c libtsgo.a -lpthread -ldl
 	./test_c
 clean:
-	rm -rf libtsgo_cpp.a libtsgo_cpp.h test_cpp test_c dist
-	rm -f $(TSGO_REPO)/tsgo_cpp.go $(TSGO_REPO)/libtsgo_cpp.h $(TSGO_REPO)/libtsgo_cpp.a
-	rm -rf $(TSGO_REPO)/lib
+	rm -rf libtsgo.a libtsgo.h test_cpp test_c dist
