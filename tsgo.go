@@ -119,7 +119,7 @@ func (p *parseHost) ReadDirectory(root string, extensions []string, excludes []s
 	return []string{}
 }
 
-const tsconfigJSON = `{"compilerOptions": {"target": "ESNext", "module": "ESNext", "lib": ["ESNext"], "moduleResolution": "bundler", "strict": true}}`
+const tsconfigJSON = `{"compilerOptions": {"target": "ESNext", "module": "ESNext", "lib": ["ESNext", "DOM"], "moduleResolution": "bundler", "strict": true}}`
 
 func makeWrapper() *fsWrapper {
 	wrapper := &fsWrapper{files: make(map[string]string)}
@@ -194,6 +194,16 @@ type parsedGitURI struct {
 	dirPath string // repo-relative directory containing the source file
 }
 
+// dirPathOf returns the repo-relative directory for a slice of path segments
+// (the segment(s) after owner/repo/[raw/branch/]branch), collapsing "." to "".
+func dirPathOf(parts []string) string {
+	dir := filepath.Dir(strings.Join(parts, "/"))
+	if dir == "." {
+		return ""
+	}
+	return dir
+}
+
 // parseGitURI extracts {host, owner, repo, branch} from either uri shape:
 //
 //	gitea-style:  scheme://HOST/OWNER/REPO/raw/branch/BRANCH/PATH...
@@ -208,31 +218,21 @@ func parseGitURI(uri string) (parsedGitURI, bool) {
 		return parsedGitURI{}, false
 	}
 	host := rest[:slash]
-	path := rest[slash+1:]
-	parts := strings.Split(path, "/")
+	parts := strings.Split(rest[slash+1:], "/")
 
-	kind := gitApiKindForHost(host)
-	switch kind {
+	switch gitApiKindForHost(host) {
 	case gitApiGithub:
 		// OWNER/REPO/BRANCH/PATH...
 		if len(parts) < 4 {
 			return parsedGitURI{}, false
 		}
-		dirPath := filepath.Dir(strings.Join(parts[3:], "/"))
-		if dirPath == "." {
-			dirPath = ""
-		}
-		return parsedGitURI{kind: kind, host: host, owner: parts[0], repo: parts[1], branch: parts[2], dirPath: dirPath}, true
+		return parsedGitURI{kind: gitApiGithub, host: host, owner: parts[0], repo: parts[1], branch: parts[2], dirPath: dirPathOf(parts[3:])}, true
 	case gitApiGitea:
 		// OWNER/REPO/raw/branch/BRANCH/PATH...
 		if len(parts) < 5 || parts[2] != "raw" || parts[3] != "branch" {
 			return parsedGitURI{}, false
 		}
-		dirPath := filepath.Dir(strings.Join(parts[5:], "/"))
-		if dirPath == "." {
-			dirPath = ""
-		}
-		return parsedGitURI{kind: kind, host: host, owner: parts[0], repo: parts[1], branch: parts[4], dirPath: dirPath}, true
+		return parsedGitURI{kind: gitApiGitea, host: host, owner: parts[0], repo: parts[1], branch: parts[4], dirPath: dirPathOf(parts[5:])}, true
 	default:
 		return parsedGitURI{}, false
 	}
@@ -262,63 +262,37 @@ func rawFileURL(pg parsedGitURI, repoPath string) string {
 	}
 }
 
-// probeGitCompat confirms uri's host actually serves a working tree/listing API
-// before it's treated as git-compat, rather than trusting the hostname alone.
-func probeGitCompat(uri string) (parsedGitURI, bool) {
+// fetchGitDts parses uri, and if it's a git-compat host, walks the repo tree once
+// and fetches every *.d.ts in the same directory as the source file, appending
+// contents to dtsBuilder and storing each under /types/<basename> in wrapper.
+// No-op (not an error) if uri isn't git-compat, the API call fails, or the
+// response doesn't parse. Best-effort per-file: individual fetch failures are skipped.
+func fetchGitDts(uri string, dtsBuilder *strings.Builder, wrapper *fsWrapper) {
 	pg, ok := parseGitURI(uri)
 	if !ok {
-		return parsedGitURI{}, false
+		return
 	}
 
-	resp, err := http.Get(treeApiURL(pg))
-	if err != nil || resp.StatusCode != http.StatusOK {
-		if resp != nil {
-			resp.Body.Close()
-		}
-		return parsedGitURI{}, false
-	}
-	defer resp.Body.Close()
-
-	var probe struct {
-		Tree []struct {
-			Path string `json:"path"`
-		} `json:"tree"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&probe); err != nil {
-		return parsedGitURI{}, false
-	}
-
-	return pg, true
-}
-
-// fetchAllDts walks the repo tree via the appropriate API and fetches every *.d.ts file
-// found in the same directory as the source file (pg.dirPath), appending contents to dtsBuilder and storing each under /types/<basename> in wrapper.
-// Best-effort: any individual failure is skipped, never fatal.
-func fetchAllDts(pg parsedGitURI, dtsBuilder *strings.Builder, wrapper *fsWrapper) {
 	resp, err := http.Get(treeApiURL(pg))
 	if err != nil {
 		return
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return
+	}
 
 	var result struct {
 		Tree []struct {
 			Path string `json:"path"`
 		} `json:"tree"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if json.NewDecoder(resp.Body).Decode(&result) != nil {
 		return
 	}
 
 	for _, item := range result.Tree {
-		if !strings.HasSuffix(item.Path, ".d.ts") {
-			continue
-		}
-		itemDir := filepath.Dir(item.Path)
-		if itemDir == "." {
-			itemDir = ""
-		}
-		if itemDir != pg.dirPath {
+		if !strings.HasSuffix(item.Path, ".d.ts") || dirPathOf(strings.Split(item.Path, "/")) != pg.dirPath {
 			continue
 		}
 
@@ -339,10 +313,10 @@ func fetchAllDts(pg parsedGitURI, dtsBuilder *strings.Builder, wrapper *fsWrappe
 }
 
 // fetch_and_transpile handles all uri kinds:
-//   - file://          sibling *.d.ts files in the same directory are globbed and included
-//   - git-compat http(s)://  (probed via probeGitCompat) *.d.ts files in the same repo
-//     directory as the source file are discovered and fetched via the host's tree API
-//   - plain http(s):// only the single source file is fetched, no type discovery
+//   - file://                 sibling *.d.ts files in the same directory are globbed and included
+//   - git-compat http(s)://   *.d.ts files in the same repo directory as the source file
+//     are discovered and fetched via the host's tree API (see fetchGitDts)
+//   - plain http(s)://        only the single source file is fetched, no type discovery
 //
 //export fetch_and_transpile
 func fetch_and_transpile(cSrcURI *C.char) *C.char {
@@ -357,8 +331,7 @@ func fetch_and_transpile(cSrcURI *C.char) *C.char {
 		data, _ = os.ReadFile(filePath)
 		fileName = "/" + filepath.Base(filePath)
 
-		dir := filepath.Dir(filePath)
-		matches, _ := filepath.Glob(filepath.Join(dir, "*.d.ts"))
+		matches, _ := filepath.Glob(filepath.Join(filepath.Dir(filePath), "*.d.ts"))
 		for _, m := range matches {
 			content, err := os.ReadFile(m)
 			if err != nil {
@@ -375,10 +348,7 @@ func fetch_and_transpile(cSrcURI *C.char) *C.char {
 			resp.Body.Close()
 		}
 		fileName = "/" + filepath.Base(uri)
-
-		if pg, ok := probeGitCompat(uri); ok {
-			fetchAllDts(pg, &dtsBuilder, wrapper)
-		}
+		fetchGitDts(uri, &dtsBuilder, wrapper) // no-op if uri isn't git-compat
 	}
 
 	result := transpile_core(fileName, string(data), &dtsBuilder, wrapper)

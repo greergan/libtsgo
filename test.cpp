@@ -34,7 +34,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    std::string uri4 = "http://codeberg.org/greergan/typescript_samples/raw/branch/master/src/hello_world.ts";
+    std::string uri4 = "https://codeberg.org/greergan/typescript_samples/raw/branch/master/src/hello_world.ts";
     GoStr result4 = fetch_and_transpile(const_cast<char*>(uri4.c_str()));
 
     if(result4.view() != expected) {
@@ -43,5 +43,15 @@ int main(int argc, char** argv) {
         std::println("Received:\n{}", result4.view());
         return 1;
     }
+
+    // std::string uri5 = "https://greergan.github.io/src/hello_world.ts";
+    // GoStr result5 = fetch_and_transpile(const_cast<char*>(uri5.c_str()));
+
+    // if(result4.view() != expected) {
+    //     std::println("Test 5 Failed");
+    //     std::println("Expected:\n{}", expected);
+    //     std::println("Received:\n{}", result5.view());
+    //     return 1;
+    // }
     return 0;
 }
