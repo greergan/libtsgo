@@ -1,26 +1,13 @@
-#include <iostream>
+#include <print>
+#include <string>
 #include "tsgo.h"
 
-int main() {
-    std::string ts_code =
-        "const v1: Vector3 = { x: 1, y: 2, z: 3 };\n"
-        "const v2: Vector3 = { x: 4, y: 5, z: 6 };\n"
-        "const v3 = add(v1, v2);\n"
-        "const v4 = scale(v1, 2);\n"
-        "console.log(dot(v3, v4));\n"
-        "const v5: Vector3 = { x: 1, y: 2, z: 3 };\n"
-        "const v6: Vector3 = { x: 4, y: 5, z: 6 };\n"
-        "const v7 = add(v5, v6);\n"
-        "const v8 = scale(v5, 2);\n"
-        "console.log(dot(v7, v8));\n";
-    std::string my_ts_code = "import console from 'console'; console.log('Hello');";
+int main(int argc, char** argv) {
+    std::string uri = "file://../typescript_samples/src/hello_world.ts";
+    GoStr result1 = fetch_and_transpile(const_cast<char*>(uri.c_str()));
+    std::println("{}", result1.view());
 
-    GoStr result1(transpile(const_cast<char*>("test.ts"), const_cast<char*>(my_ts_code.c_str()), nullptr, nullptr));
-    std::cout << "\n" << result1.view() << std::endl;
-    //GoStr result(transpile(const_cast<char*>("dir1/dir2/dir3/test.ts"), const_cast<char*>(my_ts_code.c_str()), const_cast<char*>("dist")));
-    //GoStr result2(transpile(const_cast<char*>("point.ts"), const_cast<char*>(ts_code.c_str()), const_cast<char*>(dts_code.c_str()), nullptr));
-    //GoStr result2(transpile(const_cast<char*>("point.ts"), const_cast<char*>(ts_code.c_str()), nullptr, nullptr));
-    //std::cout << "\n" << result2.view() << std::endl;
-    //build(const_cast<char*>("src"), const_cast<char*>("dist"));
-    return 0;
+    uri = "http://forgejo/greergan/typescript_samples/raw/branch/master/src/hello_world.ts";
+    GoStr result2 = fetch_and_transpile(const_cast<char*>(uri.c_str()));
+    std::println("{}", result2.view());
 }

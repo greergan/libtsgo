@@ -8,7 +8,10 @@ import (
 	"context"
 	"embed"
 	"fmt"
+	"io"
 	"io/fs"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -135,12 +138,14 @@ const tsconfigJSON = `{
 	"compilerOptions": {
 		"target": "ESNext",
 		"module": "ESNext",
+		"lib": ["ESNext", "DOM"],
 		"moduleResolution": "bundler",
 		"allowJs": true,
 		"checkJs": true,
 		"removeComments": false,
 		"forceConsistentCasingInFileNames": true,
 		"strict": true,
+		"incremental": true,
 		"noUnusedLocals": true,
 		"noUnusedParameters": true,
 		"noFallthroughCasesInSwitch": true,
@@ -152,12 +157,12 @@ const tsconfigJSON = `{
 func makeWrapper() *fsWrapper {
 	wrapper := &fsWrapper{files: make(map[string]string)}
 
-	// inject bundled lib/*.d.ts into virtual FS
+	// inject bundled lib/*.d.ts into virtual FS — available for resolution, not compilation
 	for path, content := range bundledTypes {
 		wrapper.files[path] = content
 	}
 
-	// inject runtime types/ directory into virtual FS
+	// inject runtime types/ directory into virtual FS — available for resolution, not compilation
 	filepath.WalkDir("types", func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
@@ -185,7 +190,8 @@ func makeConfig(ph *parseHost, fileNames []string) *tsoptions.ParsedCommandLine 
 		nil,
 		nil,
 	)
-	config.ParsedConfig.FileNames = append(config.ParsedConfig.FileNames, fileNames...)
+	// fileNames contains only source .ts files — definitions are resolved via the virtual FS
+	config.ParsedConfig.FileNames = fileNames
 	return config
 }
 
@@ -197,35 +203,17 @@ func transpile(cFileName *C.char, cCode *C.char, cDtsCode *C.char, cOutDir *C.ch
 	wrapper := makeWrapper()
 	wrapper.files[fileName] = tsCode
 
-	// inject dts into virtual FS if provided
+	// inject dts into types/ in virtual FS — resolved by compiler, not compiled
 	if cDtsCode != nil {
-		wrapper.files["/types.d.ts"] = C.GoString(cDtsCode)
+		wrapper.files["/types/types.d.ts"] = C.GoString(cDtsCode)
 	}
 
 	embeddedFS := bundled.WrapFS(wrapper)
 	host := &fullHost{fs: embeddedFS}
 	ph := &parseHost{fs: embeddedFS}
 
+	// fileNames contains only the source file to compile
 	fileNames := []string{fileName}
-
-	// add bundled lib types to file list
-	for path := range bundledTypes {
-		fileNames = append(fileNames, path)
-	}
-
-	// add runtime types to file list
-	filepath.WalkDir("types", func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return err
-		}
-		fileNames = append(fileNames, "/"+path)
-		return nil
-	})
-
-	// add dts to file list if provided
-	if cDtsCode != nil {
-		fileNames = append(fileNames, "/types.d.ts")
-	}
 
 	json, diags := tsoptions.ParseConfigFileTextToJson("/tsconfig.json", "/tsconfig.json", tsconfigJSON)
 	if len(diags) > 0 {
@@ -243,7 +231,7 @@ func transpile(cFileName *C.char, cCode *C.char, cDtsCode *C.char, cOutDir *C.ch
 		nil,
 		nil,
 	)
-	config.ParsedConfig.FileNames = append(config.ParsedConfig.FileNames, fileNames...)
+	config.ParsedConfig.FileNames = fileNames
 
 	prog := compiler.NewProgram(compiler.ProgramOptions{
 		Host:   host,
@@ -275,7 +263,7 @@ func transpile(cFileName *C.char, cCode *C.char, cDtsCode *C.char, cOutDir *C.ch
 	if outDir == "" {
 		var sb strings.Builder
 		prog.Emit(ctx, compiler.EmitOptions{
-			WriteFile: func(fileName string, text string, data *compiler.WriteFileData) error {
+			WriteFile: func(fn string, text string, data *compiler.WriteFileData) error {
 				sb.WriteString(text)
 				return nil
 			},
@@ -301,6 +289,113 @@ func transpile(cFileName *C.char, cCode *C.char, cDtsCode *C.char, cOutDir *C.ch
 	return C.CString("")
 }
 
+//export fetch_and_transpile
+func fetch_and_transpile(cSrcURI *C.char) *C.char {
+	uri := C.GoString(cSrcURI)
+
+	var data []byte
+	var err error
+	var fileName string
+	var dtsBuilder strings.Builder
+
+	// 1. Resolve URI and fetch content
+	if strings.HasPrefix(uri, "http://") || strings.HasPrefix(uri, "https://") {
+		resp, err := http.Get(uri)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "HTTP Error: %s\n", err.Error())
+			return C.CString("")
+		}
+		defer resp.Body.Close()
+
+		data, err = io.ReadAll(resp.Body)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Read Error: %s\n", err.Error())
+			return C.CString("")
+		}
+
+		parsedURL, _ := url.Parse(uri)
+		fileName = "/" + filepath.Base(parsedURL.Path)
+		if fileName == "/" || fileName == "/." {
+			fileName = "/remote_script.ts"
+		}
+
+	} else {
+		// Handle file:// or raw paths
+		filePath := strings.TrimPrefix(uri, "file://")
+		data, err = os.ReadFile(filePath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "File Error: %s\n", err.Error())
+			return C.CString("")
+		}
+		fileName = "/" + filepath.Base(filePath)
+
+		// Grab local sibling .d.ts files automatically
+		dir := filepath.Dir(filePath)
+		matches, _ := filepath.Glob(filepath.Join(dir, "*.d.ts"))
+		for _, match := range matches {
+			if dtsData, err := os.ReadFile(match); err == nil {
+				dtsBuilder.Write(dtsData)
+				dtsBuilder.WriteString("\n")
+			}
+		}
+	}
+
+	// 2. Setup Virtual FS
+	wrapper := makeWrapper()
+	wrapper.files[fileName] = string(data)
+
+	dtsCode := dtsBuilder.String()
+	if dtsCode != "" {
+		wrapper.files["/types/types.d.ts"] = dtsCode
+	}
+
+	embeddedFS := bundled.WrapFS(wrapper)
+	host := &fullHost{fs: embeddedFS}
+	ph := &parseHost{fs: embeddedFS}
+
+	// 3. Configure Compiler
+	json, _ := tsoptions.ParseConfigFileTextToJson("/tsconfig.json", "/tsconfig.json", tsconfigJSON)
+	config := tsoptions.ParseJsonConfigFileContent(json, ph, "/", nil, "/tsconfig.json", nil, nil, nil)
+
+	// Must explicitly include the file and the types file
+	config.ParsedConfig.FileNames = []string{fileName}
+	if dtsCode != "" {
+		config.ParsedConfig.FileNames = append(config.ParsedConfig.FileNames, "/types/types.d.ts")
+	}
+
+	// 4. Compile
+	prog := compiler.NewProgram(compiler.ProgramOptions{
+		Host:   host,
+		Config: config,
+	})
+	if prog == nil {
+		fmt.Fprintln(os.Stderr, "Error: Failed to init program")
+		return C.CString("")
+	}
+
+	ctx := context.Background()
+
+	// Print Diagnostics
+	sf := prog.GetSourceFile(fileName)
+	if sf != nil {
+		diags := append(prog.GetSyntacticDiagnostics(ctx, sf), prog.GetSemanticDiagnostics(ctx, sf)...)
+		for _, d := range diags {
+			fmt.Fprintf(os.Stderr, "[%s] TS%d: %s\n", d.Category().String(), d.Code(), d.String())
+		}
+	}
+
+	// 5. Emit to memory buffer
+	var sb strings.Builder
+	prog.Emit(ctx, compiler.EmitOptions{
+		WriteFile: func(fn string, text string, data *compiler.WriteFileData) error {
+			sb.WriteString(text)
+			return nil
+		},
+	})
+
+	return C.CString(sb.String())
+}
+
 //export build
 func build(cSrcDir *C.char, cOutDir *C.char) {
 	srcDir := C.GoString(cSrcDir)
@@ -309,26 +404,13 @@ func build(cSrcDir *C.char, cOutDir *C.char) {
 	wrapper := makeWrapper()
 	var fileNames []string
 
-	// add bundled lib types to file list
-	for path := range bundledTypes {
-		fileNames = append(fileNames, path)
-	}
-
-	// add runtime types to file list
-	filepath.WalkDir("types", func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return err
-		}
-		fileNames = append(fileNames, "/"+path)
-		return nil
-	})
-
-	// walk src directory, inject all .ts files into virtual FS
+	// walk src directory, inject all .ts source files into virtual FS
+	// fileNames contains only source .ts files — definitions resolved via virtual FS
 	filepath.WalkDir(srcDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
 		}
-		if !strings.HasSuffix(path, ".ts") {
+		if !strings.HasSuffix(path, ".ts") || strings.HasSuffix(path, ".d.ts") {
 			return nil
 		}
 		data, err := os.ReadFile(path)
