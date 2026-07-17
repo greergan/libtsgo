@@ -2,7 +2,9 @@ TSGO_REPO := ../typescript-go
 TSGO_BRANCH := typescript/v7.0.2
 TSGO_VERSION := $(notdir $(TSGO_BRANCH))
 .PHONY: all fetch-tsgo build test test-cpp test-c clean
+
 all: build
+
 fetch-tsgo:
 	@echo "==> Fetching typescript-go..."
 	@if [ -d $(TSGO_REPO) ]; then \
@@ -12,6 +14,7 @@ fetch-tsgo:
 		git clone --branch $(TSGO_BRANCH) --depth 1 https://github.com/microsoft/typescript-go.git $(TSGO_REPO); \
 		git -C $(TSGO_REPO) fetch --tags; \
 	fi
+
 build: fetch-tsgo
 	@echo "==> Building libtsgo..."
 	cp -r lib $(TSGO_REPO)/lib
@@ -27,12 +30,16 @@ build: fetch-tsgo
 		cp libtsgo.a $(CURDIR)/ && \
 		cp libtsgo.h $(CURDIR)/; \
 	fi
+
 test: test-cpp test-c
+
 test-cpp: build
 	g++ -std=c++23 -o test_cpp test.cpp libtsgo.a -lpthread -ldl
 	./test_cpp
+
 test-c: build
 	gcc -o test_c test.c libtsgo.a -lpthread -ldl
 	./test_c
+
 clean:
 	rm -rf libtsgo.a libtsgo.h test_cpp test_c dist
