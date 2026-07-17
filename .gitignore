@@ -1,6 +1,6 @@
 control
 dist
-*.h
+libtsgo.h
 *.a
 test_c
 test_cpp
