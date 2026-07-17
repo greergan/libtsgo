@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/microsoft/typescript-go/internal/ast"
@@ -31,6 +32,17 @@ import (
 //go:embed lib
 var libFS embed.FS
 var bundledTypes map[string]string
+
+var (
+	dtsCacheMu sync.RWMutex
+	dtsCache   = make(map[string]string)
+)
+
+func cacheDts(basename string, content []byte) {
+	dtsCacheMu.Lock()
+	dtsCache["/types/"+basename] = string(content)
+	dtsCacheMu.Unlock()
+}
 
 func init() {
 	bundledTypes = make(map[string]string)
@@ -119,50 +131,119 @@ func (p *parseHost) ReadDirectory(root string, extensions []string, excludes []s
 	return []string{}
 }
 
-const tsconfigJSON = `{"compilerOptions": {"target": "ESNext", "module": "ESNext", "lib": ["ESNext", "DOM"], "moduleResolution": "bundler", "strict": true}}`
+const buildTsconfigJSON = `{
+	"compilerOptions": {
+		"target": "ESNext",
+		"module": "ESNext",
+		"lib": ["ESNext", "DOM"],
+		"moduleResolution": "bundler",
+		"allowJs": true,
+		"checkJs": true,
+		"removeComments": false,
+		"forceConsistentCasingInFileNames": true,
+		"strict": true,
+		"incremental": true,
+		"noUnusedLocals": true,
+		"noUnusedParameters": true,
+		"noFallthroughCasesInSwitch": true,
+		"noImplicitOverride": true,
+		"skipDefaultLibCheck": true
+	}
+}`
+
+const fetchTranspileTsconfigJSON = `{
+	"compilerOptions": {
+		"target": "ESNext",
+		"module": "ESNext",
+		"lib": ["ESNext", "DOM"],
+		"moduleResolution": "bundler",
+		"allowJs": true,
+		"checkJs": true,
+		"removeComments": false,
+		"forceConsistentCasingInFileNames": true,
+		"strict": true,
+		"incremental": true,
+		"noUnusedLocals": true,
+		"noUnusedParameters": true,
+		"noFallthroughCasesInSwitch": true,
+		"noImplicitOverride": true,
+		"skipDefaultLibCheck": true
+	}
+}`
 
 func makeWrapper() *fsWrapper {
 	wrapper := &fsWrapper{files: make(map[string]string)}
 	for path, content := range bundledTypes {
 		wrapper.files[path] = content
 	}
+	// inject cache
+	dtsCacheMu.RLock()
+	for path, content := range dtsCache {
+		wrapper.files[path] = content
+	}
+	dtsCacheMu.RUnlock()
+	// inject runtime types/ directory into virtual FS
+	filepath.WalkDir("types", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		wrapper.files["/"+path] = string(data)
+		return nil
+	})
 	return wrapper
 }
 
-// transpile_core builds the virtual fs, compiles, and emits JS for fileName/source
-// plus any accumulated .d.ts content in dtsBuilder. Shared helper for fetch_and_transpile.
-func transpile_core(fileName string, source string, dtsBuilder *strings.Builder, wrapper *fsWrapper) string {
+func makeConfig(ph *parseHost, fileNames []string) *tsoptions.ParsedCommandLine {
+	jsonCfg, _ := tsoptions.ParseConfigFileTextToJson("/tsconfig.json", "/tsconfig.json", buildTsconfigJSON)
+	config := tsoptions.ParseJsonConfigFileContent(jsonCfg, ph, "/", nil, "/tsconfig.json", nil, nil, nil)
+	config.ParsedConfig.FileNames = fileNames
+	return config
+}
+
+func transpile_core(fileName string, source string, wrapper *fsWrapper) string {
 	wrapper.files[fileName] = source
-	dtsCode := dtsBuilder.String()
-	if dtsCode != "" {
-		wrapper.files["/types/types.d.ts"] = dtsCode
+
+	dtsCacheMu.RLock()
+	var dtsFileNames []string
+	for path := range dtsCache {
+		dtsFileNames = append(dtsFileNames, path)
 	}
+	dtsCacheMu.RUnlock()
 
 	embeddedFS := bundled.WrapFS(wrapper)
 	host := &fullHost{fs: embeddedFS}
 	ph := &parseHost{fs: embeddedFS}
 
-	jsonCfg, _ := tsoptions.ParseConfigFileTextToJson("/tsconfig.json", "/tsconfig.json", tsconfigJSON)
+	jsonCfg, _ := tsoptions.ParseConfigFileTextToJson("/tsconfig.json", "/tsconfig.json", fetchTranspileTsconfigJSON)
 	config := tsoptions.ParseJsonConfigFileContent(jsonCfg, ph, "/", nil, "/tsconfig.json", nil, nil, nil)
-	config.ParsedConfig.FileNames = []string{fileName}
-	if dtsCode != "" {
-		config.ParsedConfig.FileNames = append(config.ParsedConfig.FileNames, "/types/types.d.ts")
-	}
+	config.ParsedConfig.FileNames = append([]string{fileName}, dtsFileNames...)
 
 	prog := compiler.NewProgram(compiler.ProgramOptions{Host: host, Config: config})
 	if prog == nil {
+		fmt.Fprintln(os.Stderr, "Error: Failed to init program")
 		return ""
 	}
 
+	ctx := context.Background()
+	if sf := prog.GetSourceFile(fileName); sf != nil {
+		diags := append(prog.GetSyntacticDiagnostics(ctx, sf), prog.GetSemanticDiagnostics(ctx, sf)...)
+		for _, d := range diags {
+			fmt.Fprintf(os.Stderr, "[%s] TS%d: %s\n", d.Category().String(), d.Code(), d.String())
+		}
+	}
+
 	var sb strings.Builder
-	prog.Emit(context.Background(), compiler.EmitOptions{WriteFile: func(fn, text string, d *compiler.WriteFileData) error {
+	prog.Emit(ctx, compiler.EmitOptions{WriteFile: func(fn, text string, d *compiler.WriteFileData) error {
 		sb.WriteString(text)
 		return nil
 	}})
 	return sb.String()
 }
 
-// gitApiKind identifies remote tree/listing API dialect for a git-compat host.
 type gitApiKind int
 
 const (
@@ -171,8 +252,6 @@ const (
 	gitApiGithub
 )
 
-// gitApiKindForHost maps a known git-compat host to its API dialect.
-// Extend this table to support additional forges.
 func gitApiKindForHost(host string) gitApiKind {
 	switch host {
 	case "raw.githubusercontent.com":
@@ -184,18 +263,15 @@ func gitApiKindForHost(host string) gitApiKind {
 	}
 }
 
-// parsedGitURI holds the pieces needed to hit a tree API and construct raw URLs.
 type parsedGitURI struct {
 	kind    gitApiKind
 	host    string
 	owner   string
 	repo    string
 	branch  string
-	dirPath string // repo-relative directory containing the source file
+	dirPath string
 }
 
-// dirPathOf returns the repo-relative directory for a slice of path segments
-// (the segment(s) after owner/repo/[raw/branch/]branch), collapsing "." to "".
 func dirPathOf(parts []string) string {
 	dir := filepath.Dir(strings.Join(parts, "/"))
 	if dir == "." {
@@ -204,10 +280,6 @@ func dirPathOf(parts []string) string {
 	return dir
 }
 
-// parseGitURI extracts {host, owner, repo, branch} from either uri shape:
-//
-//	gitea-style:  scheme://HOST/OWNER/REPO/raw/branch/BRANCH/PATH...
-//	github-style: scheme://raw.githubusercontent.com/OWNER/REPO/BRANCH/PATH...
 func parseGitURI(uri string) (parsedGitURI, bool) {
 	rest := uri
 	rest = strings.TrimPrefix(rest, "https://")
@@ -222,13 +294,11 @@ func parseGitURI(uri string) (parsedGitURI, bool) {
 
 	switch gitApiKindForHost(host) {
 	case gitApiGithub:
-		// OWNER/REPO/BRANCH/PATH...
 		if len(parts) < 4 {
 			return parsedGitURI{}, false
 		}
 		return parsedGitURI{kind: gitApiGithub, host: host, owner: parts[0], repo: parts[1], branch: parts[2], dirPath: dirPathOf(parts[3:])}, true
 	case gitApiGitea:
-		// OWNER/REPO/raw/branch/BRANCH/PATH...
 		if len(parts) < 5 || parts[2] != "raw" || parts[3] != "branch" {
 			return parsedGitURI{}, false
 		}
@@ -238,7 +308,6 @@ func parseGitURI(uri string) (parsedGitURI, bool) {
 	}
 }
 
-// treeApiURL builds the tree/listing API URL for a parsed git-compat uri.
 func treeApiURL(pg parsedGitURI) string {
 	switch pg.kind {
 	case gitApiGithub:
@@ -250,7 +319,6 @@ func treeApiURL(pg parsedGitURI) string {
 	}
 }
 
-// rawFileURL builds the raw-content URL for repoPath within a parsed git-compat uri.
 func rawFileURL(pg parsedGitURI, repoPath string) string {
 	switch pg.kind {
 	case gitApiGithub:
@@ -262,12 +330,7 @@ func rawFileURL(pg parsedGitURI, repoPath string) string {
 	}
 }
 
-// fetchGitDts parses uri, and if it's a git-compat host, walks the repo tree once
-// and fetches every *.d.ts in the same directory as the source file, appending
-// contents to dtsBuilder and storing each under /types/<basename> in wrapper.
-// No-op (not an error) if uri isn't git-compat, the API call fails, or the
-// response doesn't parse. Best-effort per-file: individual fetch failures are skipped.
-func fetchGitDts(uri string, dtsBuilder *strings.Builder, wrapper *fsWrapper) {
+func fetchGitDts(uri string) {
 	pg, ok := parseGitURI(uri)
 	if !ok {
 		return
@@ -306,53 +369,126 @@ func fetchGitDts(uri string, dtsBuilder *strings.Builder, wrapper *fsWrapper) {
 			continue
 		}
 
-		dtsBuilder.Write(data)
-		dtsBuilder.WriteString("\n")
-		wrapper.files["/types/"+filepath.Base(item.Path)] = string(data)
+		cacheDts(filepath.Base(item.Path), data)
 	}
 }
 
-// fetch_and_transpile handles all uri kinds:
-//   - file://                 sibling *.d.ts files in the same directory are globbed and included
-//   - git-compat http(s)://   *.d.ts files in the same repo directory as the source file
-//     are discovered and fetched via the host's tree API (see fetchGitDts)
-//   - plain http(s)://        only the single source file is fetched, no type discovery
-//
 //export fetch_and_transpile
 func fetch_and_transpile(cSrcURI *C.char) *C.char {
 	uri := C.GoString(cSrcURI)
-	wrapper := makeWrapper()
-	var dtsBuilder strings.Builder
 	var fileName string
 	var data []byte
 
 	if strings.HasPrefix(uri, "file://") {
 		filePath := strings.TrimPrefix(uri, "file://")
-		data, _ = os.ReadFile(filePath)
+		var err error
+		data, err = os.ReadFile(filePath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "File Error: %s\n", err.Error())
+			return C.CString("")
+		}
 		fileName = "/" + filepath.Base(filePath)
 
-		matches, _ := filepath.Glob(filepath.Join(filepath.Dir(filePath), "*.d.ts"))
-		for _, m := range matches {
-			content, err := os.ReadFile(m)
-			if err != nil {
-				continue
-			}
-			dtsBuilder.Write(content)
-			dtsBuilder.WriteString("\n")
-			wrapper.files["/types/"+filepath.Base(m)] = string(content)
+		dtsPath := strings.TrimSuffix(filePath, ".ts") + ".d.ts"
+		if content, err := os.ReadFile(dtsPath); err == nil {
+			cacheDts(filepath.Base(dtsPath), content)
 		}
 	} else {
 		resp, err := http.Get(uri)
-		if err == nil {
-			data, _ = io.ReadAll(resp.Body)
-			resp.Body.Close()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "HTTP Error: %s\n", err.Error())
+			return C.CString("")
+		}
+		data, err = io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Read Error: %s\n", err.Error())
+			return C.CString("")
 		}
 		fileName = "/" + filepath.Base(uri)
-		fetchGitDts(uri, &dtsBuilder, wrapper) // no-op if uri isn't git-compat
+
+		if strings.HasSuffix(uri, ".ts") {
+			dtsURL := strings.TrimSuffix(uri, ".ts") + ".d.ts"
+			if res, err := http.Get(dtsURL); err == nil {
+				if res.StatusCode == http.StatusOK {
+					if content, err := io.ReadAll(res.Body); err == nil {
+						cacheDts(filepath.Base(dtsURL), content)
+					}
+				}
+				res.Body.Close()
+			}
+		}
+
+		fetchGitDts(uri)
 	}
 
-	result := transpile_core(fileName, string(data), &dtsBuilder, wrapper)
+	wrapper := makeWrapper()
+	result := transpile_core(fileName, string(data), wrapper)
 	return C.CString(result)
+}
+
+//export build
+func build(cSrcDir *C.char, cOutDir *C.char) {
+	srcDir := C.GoString(cSrcDir)
+	outDir := C.GoString(cOutDir)
+
+	wrapper := makeWrapper()
+	var fileNames []string
+
+	filepath.WalkDir(srcDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		if !strings.HasSuffix(path, ".ts") || strings.HasSuffix(path, ".d.ts") {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %s\n", err.Error())
+			return err
+		}
+		vPath := "/" + path
+		wrapper.files[vPath] = string(data)
+		fileNames = append(fileNames, vPath)
+		return nil
+	})
+
+	embeddedFS := bundled.WrapFS(wrapper)
+	host := &fullHost{fs: embeddedFS}
+	ph := &parseHost{fs: embeddedFS}
+
+	config := makeConfig(ph, fileNames)
+
+	prog := compiler.NewProgram(compiler.ProgramOptions{Host: host, Config: config})
+	if prog == nil {
+		fmt.Fprintln(os.Stderr, "Error: Failed to init program")
+		return
+	}
+
+	ctx := context.Background()
+
+	for _, sf := range prog.GetSourceFiles() {
+		diags := append(prog.GetSyntacticDiagnostics(ctx, sf), prog.GetSemanticDiagnostics(ctx, sf)...)
+		for _, d := range diags {
+			fmt.Fprintf(os.Stderr, "[%s] TS%d: %s\n", d.Category().String(), d.Code(), d.String())
+		}
+	}
+
+	prog.Emit(ctx, compiler.EmitOptions{
+		WriteFile: func(outFileName string, text string, data *compiler.WriteFileData) error {
+			rel := strings.TrimPrefix(outFileName, "/"+srcDir+"/")
+			dest := filepath.Join(outDir, rel)
+			if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %s\n", err.Error())
+				return err
+			}
+			if err := os.WriteFile(dest, []byte(text), 0o644); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %s\n", err.Error())
+				return err
+			}
+			return nil
+		},
+	})
 }
 
 func main() {}
