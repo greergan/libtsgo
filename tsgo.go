@@ -519,8 +519,6 @@ func fetch_and_transpile(cSrcURI *C.char) *C.char {
 				res.Body.Close()
 			}
 		}
-
-		fetchGitDts(uri)
 	}
 
 	// resolve any /// <reference path="..." /> in the source itself

@@ -4,27 +4,18 @@ A C and C++ callable static library that wraps the [microsoft/typescript-go](htt
 
 ## Table of Contents
 
-- [Typescript Definition Files](#typescript-definition-files)
 - [Compiler Options](#compiler-options)
 - [API](#api)
   - [GoStr helper](#gostr-helper)
-  - [transpile](#transpile)
+  - [fetch\_and\_transpile](#fetch_and_transpile)
   - [build](#build)
+- [Type Resolution](#type-resolution)
 - [Requirements](#requirements)
 - [Build](#build-1)
 - [Examples](#examples)
-  - [transpile](#transpile-1)
+  - [fetch\_and\_transpile](#fetch_and_transpile-1)
+  - [Type Resolution](#type-resolution-1)
   - [build](#build-2)
-
-## Typescript Definition Files
-
-| Directory | Purpose | When |
-|---|---|---|
-| `typescript-go` | All `microsoft/typescript-go` compiler libraries | Embedded at compile time into the static archive |
-| `lib/` | TypeScript standard library `.d.ts` files | Embedded at compile time into the static archive |
-| `types/` | User-provided type definitions | Loaded at runtime from the working directory |
-
-[↑ Top](#table-of-contents)
 
 ## Compiler Options
 
@@ -61,7 +52,7 @@ A lightweight wrapper for strings returned by the library. Include `tsgo.h` to u
 In C++, `GoStr` is an RAII struct — the destructor calls `free()` automatically.
 
 ```cpp
-GoStr result(transpile(...));
+GoStr result(fetch_and_transpile(...));
 std::cout << result.view() << std::endl;
 // freed on scope exit
 ```
@@ -70,37 +61,48 @@ In C, `GoStr` is a plain struct — call `GoStr_free()` manually.
 
 ```c
 GoStr result;
-result.p = transpile(...);
+result.p = fetch_and_transpile(...);
 printf("%s\n", result.p ? result.p : "");
 GoStr_free(result);
 ```
 
-### `transpile`
+### `fetch_and_transpile`
 
-Compiles a single TypeScript file in-memory.
+Compiles a single TypeScript file from a URI.
 
 ```c
-char* transpile(
-    char* fileName,   // virtual file name e.g. "input.ts"
-    char* tsCode,     // TypeScript source
-    char* dtsCode,    // optional .d.ts declarations, or NULL
-    char* outDir      // output directory, or NULL for in-memory result
-);
+char* fetch_and_transpile(char* cSrcURI);
 ```
 
-Returns emitted JavaScript.  
-Caller must `free()` the returned string, or use the provided `GoStr` helper above.
+`cSrcURI` may be a local file URI or an HTTP/HTTPS URL:
+
+| Scheme | Example |
+|---|---|
+| `file://` | `file:///path/to/input.ts` |
+| `http://` | `http://example.com/input.ts` |
+| `https://` | `https://example.com/input.ts` |
+
+Returns emitted JavaScript. Caller must `free()` the returned string, or use the provided `GoStr` helper above.
 
 ### `build`
 
-Compiles all `.ts` files in a source tree. Diagnostics and errors are printed to stdout.
+Compiles all `.ts` files in a source tree. Diagnostics and errors are printed to stderr.
 
 ```c
-void build(
-    char* srcDir,   // source directory e.g. "src"
-    char* outDir    // output directory e.g. "dist"
-);
+void build(char* srcDir, char* outDir);
 ```
+
+[↑ Top](#table-of-contents)
+
+## Type Resolution
+
+| Source | Content | When |
+|---|---|---|
+| `typescript-go` | All `microsoft/typescript-go` compiler libraries | Embedded at compile time |
+| `lib/` | TypeScript standard library `.d.ts` files | Embedded at compile time |
+| `types/` | User-provided type definitions | Loaded at runtime from working directory |
+| `file://` / `http://` / `https://` | Sibling declaration file — `input.ts` resolves `input.d.ts` from the same location | Resolved at runtime |
+| `/// <reference path="..." />` | Referenced `.d.ts` files | Resolved recursively, cycle-safe |
 
 [↑ Top](#table-of-contents)
 
@@ -130,86 +132,45 @@ This will:
 
 ## Examples
 
-### transpile
+### fetch\_and\_transpile
 
-#### C — in-memory result
+#### C — local file
 
 ```c
 #include "tsgo.h"
 
-const char* ts = "const x = 42;\nconsole.log(x);\n";
 GoStr result;
-result.p = transpile((char*)"input.ts", (char*)ts, NULL, NULL);
+result.p = fetch_and_transpile((char*)"file:///path/to/input.ts");
 printf("%s\n", result.p ? result.p : "");
 GoStr_free(result);
 ```
 
-#### C++ — in-memory result
+#### C++ — local file
 
 ```cpp
 #include "tsgo.h"
 
-std::string ts = "const x: number = 42;\nconsole.log(x);\n";
-GoStr result(transpile(
-    const_cast<char*>("input.ts"),
-    const_cast<char*>(ts.c_str()),
-    nullptr,
-    nullptr
-));
+GoStr result(fetch_and_transpile((char*)"file:///path/to/input.ts"));
 std::cout << result.view() << std::endl;
 ```
 
-#### C — emit to disk
+#### C — http(s):// URL
 
 ```c
 #include "tsgo.h"
 
-const char* ts = "const x = 42;\nconsole.log(x);\n";
 GoStr result;
-result.p = transpile((char*)"input.ts", (char*)ts, NULL, (char*)"dist");
-GoStr_free(result);
-```
-
-#### C++ — emit to disk
-
-```cpp
-#include "tsgo.h"
-
-std::string ts = "const x: number = 42;\nconsole.log(x);\n";
-transpile(
-    const_cast<char*>("input.ts"),
-    const_cast<char*>(ts.c_str()),
-    nullptr,
-    const_cast<char*>("dist")
-);
-```
-
-#### C — with .d.ts declarations
-
-```c
-#include "tsgo.h"
-
-const char* dts = "declare function add(a: number, b: number): number;\n";
-const char* ts  = "const result = add(1, 2);\nconsole.log(result);\n";
-GoStr result;
-result.p = transpile((char*)"input.ts", (char*)ts, (char*)dts, NULL);
+result.p = fetch_and_transpile((char*)"https://example.com/input.ts");
 printf("%s\n", result.p ? result.p : "");
 GoStr_free(result);
 ```
 
-#### C++ — with .d.ts declarations
+#### C++ — http(s):// URL
 
 ```cpp
 #include "tsgo.h"
 
-std::string dts = "declare function add(a: number, b: number): number;\n";
-std::string ts  = "const result = add(1, 2);\nconsole.log(result);\n";
-GoStr result(transpile(
-    const_cast<char*>("input.ts"),
-    const_cast<char*>(ts.c_str()),
-    const_cast<char*>(dts.c_str()),
-    nullptr
-));
+GoStr result(fetch_and_transpile((char*)"https://example.com/input.ts"));
 std::cout << result.view() << std::endl;
 ```
 
@@ -232,6 +193,15 @@ build(
     const_cast<char*>("src"),
     const_cast<char*>("dist")
 );
+```
+
+### Type Resolution
+
+#### file.d.ts
+
+```typescript
+/// <reference path="console.d.ts" />
+/// <reference path="utils.d.ts" />
 ```
 
 [↑ Top](#table-of-contents)
