@@ -21,3 +21,4 @@ typedef struct {
 static inline void GoStr_free(GoStr s) { free(s.p); }
 
 #endif
+#endif
