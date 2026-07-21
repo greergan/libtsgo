@@ -6,7 +6,7 @@
 
 struct GoStr {
     char* p = nullptr;
-    GoStr() = default;
+    GoStr() noexcept : p(nullptr) {}
     GoStr(char* ptr) : p(ptr) {}
     GoStr(const GoStr&) = delete;
     GoStr& operator=(const GoStr&) = delete;
