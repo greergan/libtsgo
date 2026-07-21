@@ -30,7 +30,6 @@ import (
 
 //go:embed lib
 var libFS embed.FS
-var bundledTypes map[string]string
 
 var (
 	dtsCacheMu sync.RWMutex
@@ -44,13 +43,12 @@ func cacheDts(basename string, content []byte) {
 }
 
 func init() {
-	bundledTypes = make(map[string]string)
 	fs.WalkDir(libFS, "lib", func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
 		}
 		data, _ := libFS.ReadFile(path)
-		bundledTypes["/"+path] = string(data)
+		cacheDts(filepath.Base(path), data)
 		return nil
 	})
 }
@@ -172,9 +170,6 @@ const fetchTranspileTsconfigJSON = `{
 
 func makeWrapper() *fsWrapper {
 	wrapper := &fsWrapper{files: make(map[string]string)}
-	for path, content := range bundledTypes {
-		wrapper.files[path] = content
-	}
 	dtsCacheMu.RLock()
 	for path, content := range dtsCache {
 		wrapper.files[path] = content
@@ -210,6 +205,7 @@ func transpile_core(fileName string, source string, wrapper *fsWrapper) string {
 		dtsFileNames = append(dtsFileNames, path)
 	}
 	dtsCacheMu.RUnlock()
+
 	embeddedFS := bundled.WrapFS(wrapper)
 	host := &fullHost{fs: embeddedFS}
 	ph := &parseHost{fs: embeddedFS}
@@ -421,6 +417,12 @@ func build(cSrcDir *C.char, cOutDir *C.char) {
 		fileNames = append(fileNames, vPath)
 		return nil
 	})
+
+	dtsCacheMu.RLock()
+	for path := range dtsCache {
+		fileNames = append(fileNames, path)
+	}
+	dtsCacheMu.RUnlock()
 
 	embeddedFS := bundled.WrapFS(wrapper)
 	host := &fullHost{fs: embeddedFS}
