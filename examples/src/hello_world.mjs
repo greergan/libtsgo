@@ -1,3 +1,3 @@
 import console from 'console'
 const message = "Hello World!"
-console.trace(message)
+console.log(message)

@@ -11,8 +11,10 @@ struct TestCase {
 
 const std::vector<TestCase> cases = {
     {1, "file://examples/src/hello_world.ts"},
-    //{2, "https://raw.githubusercontent.com/greergan/typescript_samples/master/src/hello_world.ts"},
-    //{3, "https://codeberg.org/greergan/typescript_samples/raw/branch/master/src/hello_world.ts"},
+    {2, "file://examples/src/hello_world.js"},
+    {3, "file://examples/src/hello_world.mjs"},
+    {4, "https://raw.githubusercontent.com/greergan/typescript_samples/master/src/hello_world.ts"},
+    {5, "https://codeberg.org/greergan/typescript_samples/raw/branch/master/src/hello_world.ts"},
 };
 
 int main(int argc, char** argv) {
