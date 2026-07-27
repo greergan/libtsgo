@@ -90,6 +90,9 @@ ifeq ($(OS_FAMILY),deb)
 	@cp libtsgo.a  dist/deb$(LIBDIR_DEB)/libtsgo.a
 	@cp libtsgo.h  dist/deb$(INCLUDEDIR)/libtsgo.h
 	@cp tsgo.h     dist/deb$(INCLUDEDIR)/tsgo.h
+	@mkdir -p dist/deb$(LIBDIR_DEB)/pkgconfig
+	@printf "prefix=/usr\nexec_prefix=\$${prefix}\nlibdir=$(LIBDIR_DEB)\nincludedir=$(INCLUDEDIR)\n\nName: $(PKG_NAME)\nDescription: A C and C++ callable static library wrapping the TypeScript compiler\nVersion: $(PKG_VERSION)\nLibs: -L\$${libdir} -ltsgo\nCflags: -I\$${includedir}\n" \
+		> dist/deb$(LIBDIR_DEB)/pkgconfig/$(PKG_NAME).pc
 	@printf "Package: $(PKG_NAME)\nVersion: $(PKG_VERSION)\nArchitecture: $(PKG_ARCH_DEB)\nMaintainer: $(PKG_MAINTAINER)\nDescription: TypeScript Go static library\n" \
 		> dist/deb/DEBIAN/control
 	@dpkg-deb --build dist/deb dist/$(PKG_NAME)_$(PKG_VERSION)_$(PKG_ARCH_DEB).deb
