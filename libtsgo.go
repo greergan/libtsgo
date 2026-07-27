@@ -343,8 +343,6 @@ func fetch_and_transpile(cSrcURI *C.char) *C.char {
 				if !resolveReferencedDts("file://"+dtsPath, content) {
 					return C.CString("")
 				}
-			} else {
-				fmt.Fprintf(os.Stderr, "fetch_and_transpile: no .d.ts found for %s (checked %s)\n", filePath, dtsPath)
 			}
 		}
 	} else if strings.HasPrefix(uri, "http://") || strings.HasPrefix(uri, "https://") {
@@ -372,8 +370,6 @@ func fetch_and_transpile(cSrcURI *C.char) *C.char {
 							return C.CString("")
 						}
 					}
-				} else {
-					fmt.Fprintf(os.Stderr, "fetch_and_transpile: no .d.ts found for %s (checked %s)\n", uri, dtsURL)
 				}
 				res.Body.Close()
 			}
