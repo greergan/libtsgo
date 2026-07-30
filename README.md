@@ -4,8 +4,9 @@ A C and C++ callable static library that wraps the [microsoft/typescript-go](htt
 - [Compiler Options](#compiler-options)
 - [API](#api)
   - [GoStr helper](#gostr-helper)
-  - [fetch\_and\_transpile](#fetch_and_transpile)
   - [build](#build)
+  - [fetch\_and\_transpile](#fetch_and_transpile)
+  - [load\_types\_dir](#load_types_dir)
 - [Type Resolution](#type-resolution)
 - [Requirements](#requirements)
 - [Build](#build-1)
@@ -20,6 +21,7 @@ A C and C++ callable static library that wraps the [microsoft/typescript-go](htt
 - [Examples](#examples)
   - [fetch\_and\_transpile](#fetch_and_transpile-1)
   - [build](#build-2)
+  - [load\_types\_dir](#load_types_dir-1)
   - [Type Resolution](#type-resolution-1)
 ## Compiler Options
 The following `compilerOptions` are embedded at compile time:
@@ -75,13 +77,18 @@ Compiles all `.ts` files in a source tree. Diagnostics and errors are printed to
 ```c
 void build(char* srcDir, char* outDir);
 ```
+### `load_types_dir`
+Loads all `.d.ts` files from a directory into the type cache. Call once at startup before any `fetch_and_transpile` or `build` calls to make user-provided type definitions available to the compiler.
+```c
+void load_types_dir(char* dir);
+```
 [↑ Top](#table-of-contents)
 ## Type Resolution
 | Source | Content | When |
 |---|---|---|
 | `typescript-go` | All `microsoft/typescript-go` compiler libraries | Embedded at compile time |
 | `lib/` | TypeScript standard library `.d.ts` files | Embedded at compile time |
-| `types/` | User-provided type definitions | Loaded at runtime from working directory |
+| `load_types_dir()` | User-provided type definitions | Loaded at runtime via explicit call |
 | `file://` / `http://` / `https://` | Sibling declaration file — `input.ts` resolves `input.d.ts` from the same location | Resolved at runtime |
 | `/// <reference path="..." />` | Referenced `.d.ts` files | Resolved recursively, cycle-safe |
 [↑ Top](#table-of-contents)
@@ -156,6 +163,19 @@ make clean
 ```
 [↑ Top](#table-of-contents)
 ## Examples
+
+### build
+#### C
+```c
+#include "libtsgo.h"
+build((char*)"src", (char*)"dist");
+```
+#### C++
+```cpp
+#include "libtsgo.h"
+build(const_cast<char*>("src"), const_cast<char*>("dist"));
+```
+[↑ Top](#table-of-contents)
 ### fetch\_and\_transpile
 #### C
 ```c
@@ -173,16 +193,17 @@ GoStr_free(result);
 GoStr result = fetch_and_transpile(const_cast<char*>("https:///path/to/input.ts"));
 std::cout << result.view() << std::endl;
 ```
-### build
+[↑ Top](#table-of-contents)
+### load\_types\_dir
 #### C
 ```c
 #include "libtsgo.h"
-build((char*)"src", (char*)"dist");
+load_types_dir((char*)"types");
 ```
 #### C++
 ```cpp
 #include "libtsgo.h"
-build(const_cast<char*>("src"), const_cast<char*>("dist"));
+load_types_dir(const_cast<char*>("types"));
 ```
 ### Type Resolution
 #### file.d.ts

@@ -320,6 +320,76 @@ func resolveReferencedDts(dtsURI string, content []byte) bool {
 	return true
 }
 
+//export build
+func build(cSrcDir *C.char, cOutDir *C.char) {
+	srcDir := C.GoString(cSrcDir)
+	outDir := C.GoString(cOutDir)
+
+	wrapper := makeWrapper()
+	var fileNames []string
+
+	filepath.WalkDir(srcDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		if !strings.HasSuffix(path, ".ts") || strings.HasSuffix(path, ".d.ts") {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "build: cannot read source file %s: %s\n", path, err.Error())
+			return err
+		}
+		vPath := "/" + path
+		wrapper.files[vPath] = string(data)
+		fileNames = append(fileNames, vPath)
+		return nil
+	})
+
+	dtsCacheMu.RLock()
+	for path := range dtsCache {
+		fileNames = append(fileNames, path)
+	}
+	dtsCacheMu.RUnlock()
+
+	embeddedFS := bundled.WrapFS(wrapper)
+	host := &fullHost{fs: embeddedFS}
+	ph := &parseHost{fs: embeddedFS}
+
+	config := makeConfig(ph, fileNames)
+
+	prog := compiler.NewProgram(compiler.ProgramOptions{Host: host, Config: config})
+	if prog == nil {
+		fmt.Fprintln(os.Stderr, "build: failed to create program")
+		return
+	}
+
+	ctx := context.Background()
+
+	for _, sf := range prog.GetSourceFiles() {
+		diags := append(prog.GetSyntacticDiagnostics(ctx, sf), prog.GetSemanticDiagnostics(ctx, sf)...)
+		for _, d := range diags {
+			fmt.Fprintf(os.Stderr, "[%s] TS%d: %s\n", d.Category().String(), d.Code(), d.String())
+		}
+	}
+
+	prog.Emit(ctx, compiler.EmitOptions{
+		WriteFile: func(outFileName string, text string, data *compiler.WriteFileData) error {
+			rel := strings.TrimPrefix(outFileName, "/"+srcDir+"/")
+			dest := filepath.Join(outDir, rel)
+			if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+				fmt.Fprintf(os.Stderr, "build: cannot create output directory %s: %s\n", filepath.Dir(dest), err.Error())
+				return err
+			}
+			if err := os.WriteFile(dest, []byte(text), 0o644); err != nil {
+				fmt.Fprintf(os.Stderr, "build: cannot write output file %s: %s\n", dest, err.Error())
+				return err
+			}
+			return nil
+		},
+	})
+}
+
 //export fetch_and_transpile
 func fetch_and_transpile(cSrcURI *C.char) *C.char {
 	uri := C.GoString(cSrcURI)
@@ -388,73 +458,21 @@ func fetch_and_transpile(cSrcURI *C.char) *C.char {
 	return C.CString(result)
 }
 
-//export build
-func build(cSrcDir *C.char, cOutDir *C.char) {
-	srcDir := C.GoString(cSrcDir)
-	outDir := C.GoString(cOutDir)
-
-	wrapper := makeWrapper()
-	var fileNames []string
-
-	filepath.WalkDir(srcDir, func(path string, d fs.DirEntry, err error) error {
+//export load_types_dir
+func load_types_dir(cDir *C.char) {
+	dir := C.GoString(cDir)
+	filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
 		}
-		if !strings.HasSuffix(path, ".ts") || strings.HasSuffix(path, ".d.ts") {
-			return nil
-		}
 		data, err := os.ReadFile(path)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "build: cannot read source file %s: %s\n", path, err.Error())
+			fmt.Fprintf(os.Stderr, "load_types_dir: cannot read %s: %s\n", path, err.Error())
 			return err
 		}
-		vPath := "/" + path
-		wrapper.files[vPath] = string(data)
-		fileNames = append(fileNames, vPath)
+		basename := filepath.Base(path)
+		cacheDts(basename, data)
 		return nil
-	})
-
-	dtsCacheMu.RLock()
-	for path := range dtsCache {
-		fileNames = append(fileNames, path)
-	}
-	dtsCacheMu.RUnlock()
-
-	embeddedFS := bundled.WrapFS(wrapper)
-	host := &fullHost{fs: embeddedFS}
-	ph := &parseHost{fs: embeddedFS}
-
-	config := makeConfig(ph, fileNames)
-
-	prog := compiler.NewProgram(compiler.ProgramOptions{Host: host, Config: config})
-	if prog == nil {
-		fmt.Fprintln(os.Stderr, "build: failed to create program")
-		return
-	}
-
-	ctx := context.Background()
-
-	for _, sf := range prog.GetSourceFiles() {
-		diags := append(prog.GetSyntacticDiagnostics(ctx, sf), prog.GetSemanticDiagnostics(ctx, sf)...)
-		for _, d := range diags {
-			fmt.Fprintf(os.Stderr, "[%s] TS%d: %s\n", d.Category().String(), d.Code(), d.String())
-		}
-	}
-
-	prog.Emit(ctx, compiler.EmitOptions{
-		WriteFile: func(outFileName string, text string, data *compiler.WriteFileData) error {
-			rel := strings.TrimPrefix(outFileName, "/"+srcDir+"/")
-			dest := filepath.Join(outDir, rel)
-			if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-				fmt.Fprintf(os.Stderr, "build: cannot create output directory %s: %s\n", filepath.Dir(dest), err.Error())
-				return err
-			}
-			if err := os.WriteFile(dest, []byte(text), 0o644); err != nil {
-				fmt.Fprintf(os.Stderr, "build: cannot write output file %s: %s\n", dest, err.Error())
-				return err
-			}
-			return nil
-		},
 	})
 }
 
