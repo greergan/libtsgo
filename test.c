@@ -19,8 +19,8 @@ int main(int argc, char** argv) {
     for (int i = 0; i < n; i++) {
         printf("running test for => %s\n", cases[i].uri);
         GoStr result;
-        result.p = fetch_and_transpile((char*)cases[i].uri);
-        printf("results for => %s\n%s\n", cases[i].uri, result.p ? result.p : "");
+        result.data = fetch_and_transpile((char*)cases[i].uri);
+        printf("results for => %s\n%s\n", cases[i].uri, result.data ? result.data : "");
         GoStr_free(result);
     }
     return 0;
